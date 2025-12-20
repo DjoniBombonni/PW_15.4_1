@@ -1,11 +1,4 @@
-// ============================================================
-// ГАЛАГА
-// Управление: A/D - движение, SPACE - выстрел, Q - выход
-// ============================================================
-
-// Нужно для CLOCK_MONOTONIC/clock_gettime() на POSIX системах.
-// ДОЛЖНО быть определено до подключения системных заголовков.
-#define _POSIX_C_SOURCE 200809L
+#define _POSIX_C_SOURCE 200809L // Для CLOCK_MONOTONIC/clock_gettime(); должно быть до системных заголовков
 
 #include <ncurses.h>
 #include <stdlib.h>
@@ -15,168 +8,154 @@
 #include <stdarg.h>
 #include <string.h>
 
-// ============================================================
-// КОНСТАНТЫ И ОПРЕДЕЛЕНИЯ
-// ============================================================
+#define MAX_ENEMIES 5               //Макс. врагов одновременно
+#define MAX_BULLETS 30              //Макс. пуль одновременно
+#define SCREEN_WIDTH 160            //Ширина игрового поля
+#define SCREEN_HEIGHT 45            //Высота игрового поля
+#define PLAYER_MOVE_STEP 1          //Шаг движения игрока (клеток)
+#define PLAYER_SPEED_CPS 35.0f      //Скорость перемещения игрока (клеток/сек)
+#define PLAYER_FIRE_COOLDOWN_S 0.12f //Задержка между выстрелами (сек)
+#define MOVE_HOLD_GRACE_S 0.45      //Время считывания движения (сек)
+#define SHOOT_HOLD_GRACE_S 0.20     //Время считывания стрельбы (сек)
+#define ENEMY_MOVE_BASE 20          //Базовая задержка движения врага (кадров)
+#define ENEMY_MOVE_MIN 2            //Минимальная задержка движения (кадров)
+#define ENEMY_MOVE_WAVE_DIV 5       //Делитель роста скорости по волнам
+#define ENEMY_SPAWN_BASE 35         //Базовый интервал спавна (кадров)
+#define ENEMY_SPAWN_MIN 10          //Минимальный интервал спавна (кадров)
+#define ENEMY_SPAWN_WAVE_STEP 3     //Шаг уменьшения интервала спавна по волнам
+#define ENEMY_GLYPH '$'             //Символ отрисовки врага
+#define ENEMY_LEN 4                 //Длина врага в символах
+#define FRAME_DELAY_MS 16           //Пауза между кадрами (мс)
+#define MAX_INPUTS_PER_FRAME 32     //Лимит считываний getch() за кадр
+#define ENEMY_SPEED_SLEW_CPS2 6.0f  //Подстройки скорости врагов
+#define ENEMIES_PER_WAVE 5          //Врагов на волну (умножается на wave)
+#define SCORE_PER_ENEMY 10          //Очков за одного врага
 
-#define MAX_ENEMIES 5        // Максимум врагов одновременно
-#define MAX_BULLETS 30        // Максимум пуль одновременно
-#define SCREEN_WIDTH 160       // Ширина игрового экрана
-#define SCREEN_HEIGHT 45      // Высота игрового экрана
-#define PLAYER_MOVE_STEP 1     // Шаг перемещения игрока (можно менять для регулировки скорости)
-#define PLAYER_SPEED_CPS 35.0f // Скорость игрока (клеток в секунду)
-#define PLAYER_FIRE_COOLDOWN_S 0.12f // Кулдаун выстрела (сек)
-#define MOVE_HOLD_GRACE_S 0.45  // Как долго продолжаем движение без автоповтора (сек)
-#define SHOOT_HOLD_GRACE_S 0.20 // Как долго считаем пробел «удерживаемым» (сек)
-#define ENEMY_MOVE_BASE 20      // Базовая скорость движения врагов (меньше — быстрее)
-#define ENEMY_MOVE_MIN 2       // Минимально допустимая скорость движения врагов
-#define ENEMY_MOVE_WAVE_DIV 5  // Как быстро растет скорость с волнами (делитель)
-#define ENEMY_SPAWN_BASE 35    // Базовая задержка спавна врагов (меньше — чаще)
-#define ENEMY_SPAWN_MIN 10     // Минимальная задержка спавна
-#define ENEMY_SPAWN_WAVE_STEP 3// Как быстро спавн учащается с волнами
-
-// Вид врага (ширина в символах). Должно быть ровно 4 символа по заданию.
-#define ENEMY_SPRITE "$$$$"
-#define ENEMY_WIDTH ((int)(sizeof(ENEMY_SPRITE) - 1))
-
-// Настройки «кадра» (влияют на отзывчивость и стабильность)
-#define FRAME_DELAY_MS 16      // Пауза между кадрами (примерно 60 FPS)
-#define MAX_INPUTS_PER_FRAME 32// Сколько событий клавиатуры обрабатываем за кадр (чтобы ввод не "съедал" обновления)
-
-// Плавность скорости врагов (ускорение/замедление), в "клетках в секунду^2"
-// Чем больше значение, тем быстрее скорость догоняет целевую.
-#define ENEMY_SPEED_SLEW_CPS2 6.0f
-
-// Параметры волны
-#define ENEMIES_PER_WAVE 5     // Сколько врагов нужно заспавнить на одну волну (умножается на wave)
-
-// Очки за одного уничтоженного врага
-#define SCORE_PER_ENEMY 10
-
-// ============================================================
-// СТРУКТУРЫ ДАННЫХ
-// ============================================================
-
-// Структура для пули
 typedef struct {
-    int x, y;               // Координаты пули
-    int active;             // Активна ли пуля (1 - да, 0 - нет)
+    int x, y;
+    int active;
 } Bullet;
 
-// Структура для врага
 typedef struct {
-    int x, y;               // Координаты врага
-    int active;             // Активен ли враг (1 - да, 0 - нет)
-    int direction;          // Направление движения (-1 влево, 1 вправо)
-    float xf, yf;            // Дробная позиция (для более плавного движения)
+    int x, y;
+    int active;
+    int direction;
+    float xf, yf;
 } Enemy;
 
-// Структура для игрока
 typedef struct {
-    int x, y;               // Координаты игрока
-    int health;             // Жизни (здоровье)
-    int score;              // Набранные очки
+    int x, y;
+    int health;
+    int score;
 } Player;
 
-// ============================================================
-// ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
-// ============================================================
+static Bullet bullets[MAX_BULLETS];
+static Enemy enemies[MAX_ENEMIES];
+static Player player;
+static int gameOver = 0;
+static int wave = 1;
+static int totalEnemiesSpawned = 0;
+static int totalEnemiesDefeated = 0;
+static int enemySpawnCounter = 0;
 
-static Bullet bullets[MAX_BULLETS];           // Массив пуль
-static Enemy enemies[MAX_ENEMIES];            // Массив врагов
-static Player player;                         // Данные игрока
-static int gameOver = 0;                      // Флаг завершения игры
-static int wave = 1;                          // Номер текущей волны
-static int totalEnemiesSpawned = 0;           // Всего врагов спавнено в волне
-static int totalEnemiesDefeated = 0;          // Всего врагов "убрано" в волне (убиты + ушли вниз + столкнулись с игроком)
-static int enemySpawnCounter = 0;             // Счетчик времени спавна врагов (в кадрах)
-
-// Текущая и целевая скорости врагов (в клетках/сек). Меняются плавно.
 static float g_enemySpeedCps = 0.0f;
 static float g_enemySpeedTargetCps = 0.0f;
 
-// Состояние ввода игрока (чтобы движение не "обрывалось" при стрельбе)
 static float g_playerXf = 0.0f;
-static int g_playerMoveDir = 0; // -1 влево, 1 вправо
+static int g_playerMoveDir = 0;
 static double g_playerMoveHeldUntil = 0.0;
 
-static int g_shootPressed = 0; // нажато в текущем кадре
+static int g_shootPressed = 0;
 static double g_shootHeldUntil = 0.0;
 static float g_shootCooldownS = 0.0f;
 
+//Ограничение значения диапазоном [lo, hi].
 static float clampf(float v, float lo, float hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
 }
 
+//Возвращаем приблизительный FPS по FRAME_DELAY_MS.
 static float frameRateApprox(void) {
     return 1000.0f / (float)FRAME_DELAY_MS;
 }
 
+//Минимальный X для левого края спрайта врага.
 static int enemyMinX(void) {
     return 1;
 }
 
+//Максимальный X для левого края врага.
 static int enemyMaxX(void) {
-    return (SCREEN_WIDTH - 2) - (ENEMY_WIDTH - 1);
+    return (SCREEN_WIDTH - 2) - (ENEMY_LEN - 1);
 }
 
+//Сколько врагов нужно заспавнить в указанной волне.
 static int enemiesThisWave(int waveNumber) {
     return waveNumber * ENEMIES_PER_WAVE;
 }
 
+//Интервал спавна врагов в кадрах для одной волны.
 static int enemySpawnRateFrames(int waveNumber) {
     int spawnRate = ENEMY_SPAWN_BASE - (waveNumber * ENEMY_SPAWN_WAVE_STEP);
     if (spawnRate < ENEMY_SPAWN_MIN) spawnRate = ENEMY_SPAWN_MIN;
     return spawnRate;
 }
 
+//Задержка движения врагов в кадрах для одной волны (меньше — быстрее).
 static int enemyMoveDelayFrames(int waveNumber) {
     int moveDelayFrames = ENEMY_MOVE_BASE - (waveNumber / ENEMY_MOVE_WAVE_DIV);
     if (moveDelayFrames < ENEMY_MOVE_MIN) moveDelayFrames = ENEMY_MOVE_MIN;
     return moveDelayFrames;
 }
 
+//Целевая скорость врагов в клетках/сек для одной волны.
 static float enemyTargetSpeedCps(int waveNumber) {
     return frameRateApprox() / (float)enemyMoveDelayFrames(waveNumber);
 }
 
+//Деактивируем все пули.
 static void clearBullets(void) {
     for (int i = 0; i < MAX_BULLETS; i++) {
         bullets[i].active = 0;
     }
 }
 
+//Деактивируем всех врагов.
 static void clearEnemies(void) {
     for (int i = 0; i < MAX_ENEMIES; i++) {
         enemies[i].active = 0;
     }
 }
 
+//Возвращаем монотонное время в секундах.
 static double monotonicSeconds(void) {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
-        // Фолбэк на time() (хуже точность, но игра не упадет).
         return (double)time(NULL);
     }
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
+//Проверяем попадание точки (x,y) в область врага.
 static int pointHitsEnemySprite(int x, int y, const Enemy *enemy) {
-    return (y == enemy->y) && (x >= enemy->x) && (x < enemy->x + ENEMY_WIDTH);
+    return (y == enemy->y) && (x >= enemy->x) && (x < enemy->x + ENEMY_LEN);
 }
 
+//Уменьшаем здоровье игрока и завершаем игру при здоровье == 0.
 static void playerTakeHit(void) {
     player.health--;
     if (player.health <= 0) gameOver = 1;
 }
 
+//Деактивируем врага и увеличиваем счетчик убранных врагов.
 static void enemyDeactivate(int enemyIndex) {
     enemies[enemyIndex].active = 0;
     totalEnemiesDefeated++;
 }
 
+//Отрисовка рамку игрового поля.
 static void drawBorder(void) {
     mvaddch(0, 0, ACS_ULCORNER);
     for (int i = 1; i < SCREEN_WIDTH - 1; i++) {
@@ -196,6 +175,7 @@ static void drawBorder(void) {
     mvaddch(SCREEN_HEIGHT - 1, SCREEN_WIDTH - 1, ACS_LRCORNER);
 }
 
+//Рисуем информацию (очки/жизни/волна) и подсказку управления.
 static void drawHudIfPossible(void) {
     int termMaxX = 0;
     int termMaxY = 0;
@@ -207,25 +187,28 @@ static void drawHudIfPossible(void) {
     mvprintw(2, 2, " Health: %d ", player.health);
     mvprintw(3, 2, " Wave: %d ", wave);
 
-    // Подсказка управления: НЕ печатаем на линии рамки (иначе пробелы "протирают" рамку).
-    // Если терминал выше игрового поля, печатаем строку ниже рамки.
     if (termMaxY > SCREEN_HEIGHT) {
         mvprintw(SCREEN_HEIGHT, 2, "A/D: Move | Space: Shoot | Q: Quit");
     }
 }
 
+//Отрисовка игрока.
 static void drawPlayer(void) {
     mvaddch(player.y, player.x, '^');
 }
 
+//Отрисовка всех активных врагов.
 static void drawEnemies(void) {
     for (int i = 0; i < MAX_ENEMIES; i++) {
         if (!enemies[i].active) continue;
         if (enemies[i].y <= 0 || enemies[i].y >= SCREEN_HEIGHT) continue;
-        mvaddnstr(enemies[i].y, enemies[i].x, ENEMY_SPRITE, ENEMY_WIDTH);
+        for (int k = 0; k < ENEMY_LEN; k++) {
+            mvaddch(enemies[i].y, enemies[i].x + k, ENEMY_GLYPH);
+        }
     }
 }
 
+//Отрисовка всех активных пуль.
 static void drawBullets(void) {
     for (int i = 0; i < MAX_BULLETS; i++) {
         if (!bullets[i].active) continue;
@@ -234,10 +217,8 @@ static void drawBullets(void) {
     }
 }
 
+//Переключаем волну, когда текущая полностью завершена.
 static void advanceWaveIfComplete(void) {
-    // Переходим на новую волну если:
-    // 1) Все враги этой волны заспавнены
-    // 2) Все заспавненные враги "убраны" (убиты/столкнулись/ушли вниз)
     const int enemiesInWave = enemiesThisWave(wave);
     if (totalEnemiesSpawned < enemiesInWave) return;
     if (totalEnemiesDefeated < totalEnemiesSpawned) return;
@@ -247,11 +228,11 @@ static void advanceWaveIfComplete(void) {
     totalEnemiesDefeated = 0;
     enemySpawnCounter = 0;
 
-    // Между волнами чистим остатки
     clearBullets();
     clearEnemies();
 }
 
+//Обрабатка попадания пуль по врагам.
 static void handleBulletEnemyCollisions(void) {
     for (int i = 0; i < MAX_BULLETS; i++) {
         if (!bullets[i].active) continue;
@@ -269,6 +250,7 @@ static void handleBulletEnemyCollisions(void) {
     }
 }
 
+//Обрабатка столкновения врагов с игроком.
 static void handleEnemyPlayerCollisions(void) {
     for (int i = 0; i < MAX_ENEMIES; i++) {
         if (!enemies[i].active) continue;
@@ -280,6 +262,7 @@ static void handleEnemyPlayerCollisions(void) {
     }
 }
 
+//Печатаем строку по центру экрана на строке y.
 static void mvprintwCentered(int y, const char *fmt, ...) {
     char buf[128];
     va_list ap;
@@ -292,13 +275,7 @@ static void mvprintwCentered(int y, const char *fmt, ...) {
     mvprintw(y, x, "%s", buf);
 }
 
-// ============================================================
-// ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: Нормализация клавиши
-// Описание:
-// - ncurses возвращает либо ASCII (0..255), либо специальные KEY_* (обычно > 255)
-// - tolower() корректно работает только для unsigned char/EOF
-//   поэтому KEY_LEFT/KEY_RIGHT нельзя напрямую пропускать через tolower()
-// ============================================================
+//Нормализация кода клавиши.
 static int normalizeKey(int ch) {
     if (ch >= 0 && ch <= 255) {
         return tolower((unsigned char)ch);
@@ -306,29 +283,21 @@ static int normalizeKey(int ch) {
     return ch;
 }
 
-// ============================================================
-// ФУНКЦИЯ: Инициализация игры
-// Описание: Устанавливает начальные значения для игрока и врагов
-// ============================================================
+//Инициализируем состояние игры перед стартом волна№1.
 static void initGame(void) {
-    // Устанавливаем начальную позицию игрока в центре экрана снизу
     player.x = SCREEN_WIDTH / 2;
     player.y = SCREEN_HEIGHT - 2;
-    player.health = 3;      // 3 жизни в начале
-    player.score = 0;       // 0 очков в начале
-    wave = 1;               // Первая волна
-    gameOver = 0;           // Сбрасываем флаг завершения игры
+    player.health = 3;
+    player.score = 0;
+    wave = 1;
+    gameOver = 0;
     totalEnemiesSpawned = 0;
     totalEnemiesDefeated = 0;
-    enemySpawnCounter = 0;  // Сбрасываем таймер спавна врагов
+    enemySpawnCounter = 0;
 
-    // Инициализируем скорость врагов под первую волну (без резкого старта)
-    // Используем ту же формулу, что и раньше (через "задержку в кадрах"),
-    // но переводим ее в клетки/сек.
     g_enemySpeedTargetCps = enemyTargetSpeedCps(wave);
     g_enemySpeedCps = g_enemySpeedTargetCps;
 
-    // Инициализация состояния игрока для плавного движения/одновременной стрельбы
     g_playerXf = (float)player.x;
     g_playerMoveDir = 0;
     g_playerMoveHeldUntil = 0.0;
@@ -338,48 +307,34 @@ static void initGame(void) {
     
     clearBullets();
     clearEnemies();
-    
-    // Инициализируем генератор случайных чисел
+
     srand(time(NULL));
 }
 
-// ФУНКЦИЯ: Спавнить врага
-// Описание: Добавляет нового врага; возвращает 1 при успехе
-// ============================================================
+//Добавление нового врага; возвращаем 1 при успехе.
 static int spawnEnemy(void) {
-    // Ищем первое неактивное место в массиве враг
     for (int i = 0; i < MAX_ENEMIES; i++) {
         if (!enemies[i].active) {
-            // Генерируем случайную X координату так, чтобы спрайт из ENEMY_WIDTH символов
-            // полностью помещался внутри рамки (между 1 и SCREEN_WIDTH-2).
             const int minX = enemyMinX();
             const int maxX = enemyMaxX();
             const int range = maxX - minX + 1;
             if (range <= 0) return 0;
             enemies[i].x = (rand() % range) + minX;
-            // Начальная Y координата в верхней части экрана
             enemies[i].y = 1;
             enemies[i].xf = (float)enemies[i].x;
             enemies[i].yf = (float)enemies[i].y;
-            // Активируем врага
             enemies[i].active = 1;
-            // Случайное начальное направление движения
             enemies[i].direction = (rand() % 2) ? 1 : -1;
-            return 1;  // Успешно заспавнили
+            return 1;
         }
     }
-    return 0; // Места нет — спавн не выполнен
+    return 0;
 }
 
-// ============================================================
-// ФУНКЦИЯ: Выстрелить пулей
-// Описание: Создает новую пулю на позиции игрока
-// ============================================================
+//Создаем новую пулю над игроком, если есть место.
 static void shootBullet(void) {
-    // Ищем первое неактивное место для пули
     for (int i = 0; i < MAX_BULLETS; i++) {
         if (!bullets[i].active) {
-            // Пуля появляется на позиции игрока, на один шаг выше
             bullets[i].x = player.x;
             bullets[i].y = player.y - 1;
             bullets[i].active = 1;
@@ -388,59 +343,46 @@ static void shootBullet(void) {
     }
 }
 
-// ============================================================
-// ФУНКЦИЯ: Обработка ввода с клавиатуры
-// Описание: Обрабатывает нажатия клавиш для управления игроком
-// Параметр ch: Код нажатой клавиши
-// ============================================================
+//Обрабатка одного нажатие клавиши и обновение состояния ввода.
 static void handleInput(int ch) {
-    // Если нет ввода, выходим
     if (ch == ERR) return;
     
-    // Нормализуем: ASCII приводим к нижнему регистру, KEY_* оставляем как есть
     ch = normalizeKey(ch);
     
-    // Обрабатываем нажатие клавиши
     const double nowT = monotonicSeconds();
     switch (ch) {
-        // Клавиша 'A' или стрелка влево - движение влево
         case 'a':
         case KEY_LEFT:
             g_playerMoveDir = -1;
             g_playerMoveHeldUntil = nowT + MOVE_HOLD_GRACE_S;
             break;
         
-        // Клавиша 'D' или стрелка вправо - движение вправо
         case 'd':
         case KEY_RIGHT:
             g_playerMoveDir = 1;
             g_playerMoveHeldUntil = nowT + MOVE_HOLD_GRACE_S;
             break;
         
-        // Пробел - выстрел
         case ' ':
             g_shootPressed = 1;
             g_shootHeldUntil = nowT + SHOOT_HOLD_GRACE_S;
             break;
         
-        // Клавиша 'Q' - выход из игры
         case 'q':
-            gameOver = 1;   // Устанавливаем флаг завершения игры
+            gameOver = 1;
             break;
     }
 }
 
+//Обновляем позицию игрока и стрельбу по состоянию ввода.
 static void updatePlayer(float dt, double nowT) {
-    // Движение: если недавно была A/D, продолжаем двигаться каждый кадр
     if (nowT <= g_playerMoveHeldUntil && g_playerMoveDir != 0) {
         g_playerXf += (float)g_playerMoveDir * PLAYER_SPEED_CPS * dt;
     }
 
     g_playerXf = clampf(g_playerXf, 1.0f, (float)(SCREEN_WIDTH - 2));
-    // Для положительных координат достаточно округления через +0.5.
     player.x = (int)(g_playerXf + 0.5f);
 
-    // Стрельба: одиночный выстрел по нажатию + автострельба при удержании (через кулдаун)
     g_shootCooldownS -= dt;
     if (g_shootCooldownS < 0.0f) g_shootCooldownS = 0.0f;
 
@@ -452,18 +394,12 @@ static void updatePlayer(float dt, double nowT) {
     g_shootPressed = 0;
 }
 
-// ============================================================
-// ФУНКЦИЯ: Обновить пули
-// Описание: Перемещает активные пули вверх по экрану
-// ============================================================
+//Перемещаем пули вверх и удаляем вышедшие за границу поля.
 static void updateBullets(void) {
-    // Проходим по всем пулям
     for (int i = 0; i < MAX_BULLETS; i++) {
         if (bullets[i].active) {
-            // Перемещаем пулю на 1 позицию вверх
             bullets[i].y--;
             
-            // Если пуля вышла за верхнюю границу экрана, деактивируем её
             if (bullets[i].y <= 0) {
                 bullets[i].active = 0;
             }
@@ -471,6 +407,7 @@ static void updateBullets(void) {
     }
 }
 
+//Выполняем спавн врагов по таймеру волны.
 static void spawnEnemiesThisFrame(void) {
     enemySpawnCounter++;
 
@@ -483,11 +420,11 @@ static void spawnEnemiesThisFrame(void) {
         totalEnemiesSpawned++;
         enemySpawnCounter = 0;
     } else {
-        // Если места нет, не накручиваем totalEnemiesSpawned и пробуем снова на следующем кадре
         enemySpawnCounter = spawnRate;
     }
 }
 
+//Считаем смещение врагов за кадр с плавной подстройкой скорости.
 static float enemyDeltaCells(float dt) {
     g_enemySpeedTargetCps = enemyTargetSpeedCps(wave);
     const float maxSpeedDelta = ENEMY_SPEED_SLEW_CPS2 * dt;
@@ -496,6 +433,7 @@ static float enemyDeltaCells(float dt) {
     return g_enemySpeedCps * dt;
 }
 
+//Двигаем врагов и проверяем выход вниз/попадания по игроку.
 static void moveEnemies(float delta) {
     const int minX = enemyMinX();
     const int maxX = enemyMaxX();
@@ -524,31 +462,21 @@ static void moveEnemies(float delta) {
     }
 }
 
-// ============================================================
-// ФУНКЦИЯ: Обновить врагов
-// Описание: Управляет спавном и движением врагов
-// ============================================================
+//Спавним и двигаем врагов за кадр.
 static void updateEnemies(float dt) {
     spawnEnemiesThisFrame();
     moveEnemies(enemyDeltaCells(dt));
 }
 
-// ============================================================
-// ФУНКЦИЯ: Проверить столкновения
-// Описание: Проверяет столкновения пуль с врагами и врагов с игроком
-// ============================================================
+//Проверяем все типы столкновений и завершаем волны.
 static void checkCollisions(void) {
     handleBulletEnemyCollisions();
     handleEnemyPlayerCollisions();
     advanceWaveIfComplete();
 }
 
-// ============================================================
-// ФУНКЦИЯ: Рендер (отрисовка) игры
-// Описание: Отрисовывает все объекты и информацию на экране
-// ============================================================
+//Отрисовываем кадр игры.
 static void render(void) {
-    // erase() обычно меньше мерцает, чем clear().
     erase();
 
     drawBorder();
@@ -558,66 +486,42 @@ static void render(void) {
     drawBullets();
     drawHudIfPossible();
     
-    // Обновляем экран без мерцания: копим изменения и применяем одним doupdate().
-    // Используем wnoutrefresh(stdscr), т.к. noutrefresh() может быть недоступен в некоторых сборках curses.
     wnoutrefresh(stdscr);
     doupdate();
 }
 
-// ============================================================
-// ФУНКЦИЯ: Главный игровой цикл
-// Описание: Основной цикл игры, который повторяется каждый кадр
-// ============================================================
+//Главный игровой цикл (ввод -> обновление -> рендер).
 static void gameLoop(void) {
-    // Включаем неблокирующий режим чтения (getch() не ждет ввода)
     nodelay(stdscr, TRUE);
-    // Неблокирующее чтение: getch() сразу возвращает ERR, если ввода нет
-    // (а FPS регулируем через napms(FRAME_DELAY_MS)).
     wtimeout(stdscr, 0);
     
-    // Основной игровой цикл - продолжается пока игра не завершена
     double prevT = monotonicSeconds();
     while (!gameOver) {
         const double nowT = monotonicSeconds();
         float dt = (float)(nowT - prevT);
         prevT = nowT;
-        // Защита от "скачков" времени (например, если окно терминала подвисло)
         dt = clampf(dt, 0.0f, 0.05f);
 
-        // Считываем все доступные нажатия в текущем кадре.
-        // Это позволяет обработать движение и выстрел «одновременно» (в одном кадре),
-        // если пользователь нажал/удерживает несколько клавиш.
-        // Важно: если держать клавишу, терминал генерирует автоповтор.
-        // Без лимита можно "утонуть" в вводе и перестать обновлять игру.
         for (int i = 0; i < MAX_INPUTS_PER_FRAME; i++) {
             int ch = getch();
             if (ch == ERR) break;
             handleInput(ch);
         }
 
-        // Применяем ввод к игроку (движение + возможный выстрел)
         updatePlayer(dt, nowT);
         
-        // Обновляем состояние игры каждый кадр
-        updateBullets();   // Перемещаем пули
-        updateEnemies(dt); // Управляем врагами
-        checkCollisions(); // Проверяем столкновения
+        updateBullets();
+        updateEnemies(dt);
+        checkCollisions();
         
-        // Отрисовываем игру на экране
         render();
 
-        // Держим стабильную скорость обновления
         napms(FRAME_DELAY_MS);
     }
 }
 
-// ============================================================
-// ФУНКЦИЯ: Экран завершения игры
-// Описание: Показывает финальную статистику и спрашивает перезапуск
-// Возврат: 1 - перезапуск, 0 - выход
-// ============================================================
+//Экран Game Over и выбор перезапуска/выхода.
 static int endGame(void) {
-    // Аналогично render(): erase() уменьшает мерцание при выводе экрана завершения.
     erase();
     
     const int cy = SCREEN_HEIGHT / 2;
@@ -626,11 +530,9 @@ static int endGame(void) {
     mvprintwCentered(cy,     "Wave Reached: %d", wave);
     mvprintwCentered(cy + 2, "%s", "Press R to restart");
     mvprintwCentered(cy + 3, "%s", "Press Q or ESC to quit");
-    // Обновляем экран без мерцания
     wnoutrefresh(stdscr);
     doupdate();
     
-    // Ждем корректный ввод пользователя
     int ch;
     while (1) {
         ch = getch();
@@ -639,41 +541,30 @@ static int endGame(void) {
     }
 }
 
-// ============================================================
-// ГЛАВНАЯ ФУНКЦИЯ
-// Описание: Точка входа программы, инициализирует ncurses и циклический рестарт игры
-// ============================================================
 int main(void) {
-    // ========== ИНИЦИАЛИЗАЦИЯ NCURSES ==========
-    initscr();              // Инициализируем ncurses
-    raw();                  // Включаем режим raw (посимвольный ввод)
-    noecho();               // Отключаем эхо (символы не выводятся)
-    keypad(stdscr, TRUE);   // Включаем поддержку специальных клавиш (стрелки, F1 и т.д.)
-    curs_set(0);            // Скрываем курсор
+    initscr();
+    raw();
+    noecho();
+    keypad(stdscr, TRUE);
+    curs_set(0);
     
-    // ========== ПРОВЕРКА РАЗМЕРА ТЕРМИНАЛА ==========
     int maxX, maxY;
-    getmaxyx(stdscr, maxY, maxX);  // Получаем размеры терминала
+    getmaxyx(stdscr, maxY, maxX);
     
-    // Проверяем минимальные требования (по настройкам экрана)
     if (maxX < SCREEN_WIDTH || maxY < SCREEN_HEIGHT) {
-        endwin();           // Завершаем работу ncurses
-        // Выводим сообщение об ошибке
+        endwin();
         printf("Требуется размер терминала минимум %dx%d\n", SCREEN_WIDTH, SCREEN_HEIGHT);
-        return 1;           // Возвращаем код ошибки
+        return 1;
     }
     
-    // ========== ЦИКЛ ИГРЫ С ПЕРЕЗАПУСКОМ ==========
     while (1) {
-        initGame();      // Инициализируем игру перед запуском
-        gameLoop();      // Запускаем основной игровой цикл
-        // Если игрок выбрал выход, прерываем цикл
+        initGame();
+        gameLoop();
         if (!endGame()) {
             break;
         }
     }
     
-    //Завершение программы
-    endwin();        // Завершаем работу ncurses
-    return 0;        // Возвращаем успешный код выхода
+    endwin();           
+    return 0;        
 }
