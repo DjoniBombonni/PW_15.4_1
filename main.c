@@ -1,4 +1,4 @@
-#define _POSIX_C_SOURCE 200809L // Для CLOCK_MONOTONIC/clock_gettime(); должно быть до системных заголовков
+#define _POSIX_C_SOURCE 200809L
 
 #include <ncurses.h>
 #include <stdlib.h>
